@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/djylb/nps/lib/common"
+	"github.com/djylb/nps/lib/credential"
 	"github.com/djylb/nps/lib/crypt"
 	"github.com/djylb/nps/lib/logs"
 )
@@ -323,20 +324,20 @@ func MigrateLegacyData() {
 		}
 
 		user, ok := usersByUsername[username]
-		if ok && (user.Hidden || user.Kind != "local" || user.Password != password) {
+		if ok && (user.Hidden || user.Kind != "local" || !legacyPasswordMatches(user.Password, password)) {
 			ok = false
 		}
 		if !ok {
 			candidate := username
 			if existing, exists := usersByUsername[candidate]; exists &&
-				(existing.Password != password || existing.Hidden || existing.Kind != "local") {
+				(!legacyPasswordMatches(existing.Password, password) || existing.Hidden || existing.Kind != "local") {
 				candidate = candidate + "__legacy_" + strconv.Itoa(client.Id)
 				logs.Warn("legacy user credential conflict for %s, migrated client %d into %s", username, client.Id, candidate)
 			}
 			user = &User{
 				Id:         int(db.JsonDb.GetUserId()),
 				Username:   candidate,
-				Password:   password,
+				Password:   hashLegacyPassword(password),
 				TOTPSecret: totpSecret,
 				Kind:       "local",
 				Status:     1,
@@ -396,4 +397,32 @@ func MigrateLegacyData() {
 	if changed {
 		db.FlushToDisk()
 	}
+}
+
+// legacyPasswordMatches reports whether a legacy-import plaintext password
+// corresponds to the stored value, accepting both Argon2id hashes and legacy
+// plaintext so the one-time migration does not treat upgraded accounts as
+// conflicts.
+func legacyPasswordMatches(stored, supplied string) bool {
+	if stored == "" || supplied == "" {
+		return stored == "" && supplied == ""
+	}
+	match, _, err := credential.VerifyPassword(stored, supplied)
+	return err == nil && match
+}
+
+// hashLegacyPassword stores legacy-import passwords as Argon2id hashes; if
+// hashing unexpectedly fails it keeps the plaintext so the next successful
+// login can migrate it instead of locking the account out.
+func hashLegacyPassword(plain string) string {
+	plain = strings.TrimSpace(plain)
+	if plain == "" {
+		return ""
+	}
+	hashed, err := credential.HashPassword(plain)
+	if err != nil {
+		logs.Error("hash legacy import password failed: %v", err)
+		return plain
+	}
+	return hashed
 }

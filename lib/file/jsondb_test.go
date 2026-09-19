@@ -15,7 +15,7 @@ func TestLoadJsonFileSupportsAllTypes(t *testing.T) {
 		ids := make([]int, 0)
 		keys := make([]string, 0)
 
-		err := loadJsonFile(input, Client{}, func(value interface{}) {
+		err := loadSyncMapFromBytes(input, "clients.json", Client{}, func(value interface{}) {
 			c := value.(*Client)
 			ids = append(ids, c.Id)
 			keys = append(keys, c.VerifyKey)
@@ -35,7 +35,7 @@ func TestLoadJsonFileSupportsAllTypes(t *testing.T) {
 		input := []byte(`[{"Id":10,"Host":"a.com"},{"Id":11,"Host":"b.com"}]`)
 		hosts := make([]string, 0)
 
-		err := loadJsonFile(input, Host{}, func(value interface{}) {
+		err := loadSyncMapFromBytes(input, "hosts.json", Host{}, func(value interface{}) {
 			h := value.(*Host)
 			hosts = append(hosts, h.Host)
 		})
@@ -51,7 +51,7 @@ func TestLoadJsonFileSupportsAllTypes(t *testing.T) {
 		input := []byte(`[{"Id":21,"Mode":"tcp"},{"Id":22,"Mode":"udp"}]`)
 		modes := make([]string, 0)
 
-		err := loadJsonFile(input, Tunnel{}, func(value interface{}) {
+		err := loadSyncMapFromBytes(input, "tasks.json", Tunnel{}, func(value interface{}) {
 			tn := value.(*Tunnel)
 			modes = append(modes, tn.Mode)
 		})
@@ -65,7 +65,7 @@ func TestLoadJsonFileSupportsAllTypes(t *testing.T) {
 }
 
 func TestLoadJsonFileInvalidJSONReturnsError(t *testing.T) {
-	err := loadJsonFile([]byte(`[{"Id":1}`), Client{}, func(value interface{}) {})
+	err := loadSyncMapFromBytes([]byte(`[{"Id":1}`), "clients.json", Client{}, func(value interface{}) {})
 	if err == nil {
 		t.Fatalf("expected json unmarshal error")
 	}
@@ -164,7 +164,7 @@ func TestLoadJsonFileImportsLegacyClientWebLoginFields(t *testing.T) {
 	input := []byte(`[{"Id":1,"VerifyKey":"v1","WebUserName":"tenant","WebPassword":"pw","WebTotpSecret":"JBSWY3DPEHPK3PXP"}]`)
 	var loaded []*Client
 
-	err := loadJsonFile(input, Client{}, func(value interface{}) {
+	err := loadSyncMapFromBytes(input, "clients.json", Client{}, func(value interface{}) {
 		loaded = append(loaded, value.(*Client))
 	})
 	if err != nil {
@@ -183,7 +183,7 @@ func TestLoadJsonFileImportsLegacyClientBlacklistField(t *testing.T) {
 	input := []byte(`[{"Id":1,"VerifyKey":"v1","BlackIpList":[" 127.0.0.1 ","10.0.0.0/8"]}]`)
 	var loaded []*Client
 
-	err := loadJsonFile(input, Client{}, func(value interface{}) {
+	err := loadSyncMapFromBytes(input, "clients.json", Client{}, func(value interface{}) {
 		loaded = append(loaded, value.(*Client))
 	})
 	if err != nil {

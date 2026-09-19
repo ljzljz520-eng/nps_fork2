@@ -812,7 +812,7 @@ func writeSyncMapToFile(m *sync.Map, filePath string) (err error) {
 			}
 		}
 
-		data, marshalErr := json.Marshal(value)
+		data, marshalErr := marshalPersistedValue(value)
 		if marshalErr != nil {
 			rangeErr = fmt.Errorf("marshal %T: %w", value, marshalErr)
 			return false
@@ -962,24 +962,34 @@ func loadSyncMapFromFile(filePath string, t interface{}, f func(value interface{
 	if err != nil {
 		return err
 	}
-	loadSyncMapFromBytes(b, filePath, t, f)
-	return nil
+	return loadSyncMapFromBytes(b, filePath, t, f)
 }
 
-func loadSyncMapFromBytes(b []byte, filePath string, t interface{}, f func(value interface{})) {
-	// Prefer the current JSON array format first.
-	err := loadJsonFile(b, t, f)
-
-	if err != nil {
-		logs.Warn("Load json file %s error: %v", filePath, err)
-		logs.Info("Load %s as obsolete json file", filePath)
-		// Fall back to the older line-delimited format on parse failure.
-		loadObsoleteJsonFile(b, t, f)
+func loadSyncMapFromBytes(b []byte, filePath string, t interface{}, f func(value interface{})) error {
+	objType := persistedObjectType(t)
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 {
+		return nil
 	}
+	// Prefer the current JSON array format first.
+	if trimmed[0] == '[' {
+		elements, err := openPersistedArray(objType, b)
+		if err != nil {
+			return err
+		}
+		for _, raw := range elements {
+			if err := decodePersistedObject(raw, t, f); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// Fall back to the older line-delimited format.
+	logs.Warn("Load %s as obsolete line-delimited json file", filePath)
+	return loadObsoleteJsonFile(b, t, f, objType)
 }
 
-func loadObsoleteJsonFile(b []byte, t interface{}, f func(value interface{})) {
-	var err error
+func loadObsoleteJsonFile(b []byte, t interface{}, f func(value interface{}), objType string) error {
 	// The legacy format is split by "\n"+common.CONN_DATA_SEQ.
 	separator := []byte("\n" + common.CONN_DATA_SEQ)
 	for _, raw := range bytes.Split(b, separator) {
@@ -987,78 +997,13 @@ func loadObsoleteJsonFile(b []byte, t interface{}, f func(value interface{})) {
 		if len(raw) == 0 {
 			continue
 		}
-		switch t.(type) {
-		case Client:
-			var client Client
-			if err = json.Unmarshal(raw, &client); err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-			f(&client)
-		case Host:
-			var host Host
-			if err = json.Unmarshal(raw, &host); err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-			f(&host)
-		case Tunnel:
-			var tunnel Tunnel
-			if err = json.Unmarshal(raw, &tunnel); err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-			f(&tunnel)
+		opened, err := openPersistedObject(objType, raw)
+		if err != nil {
+			return err
 		}
-	}
-}
-
-func loadJsonFile(b []byte, t interface{}, f func(value interface{})) error {
-	var err error
-	switch t.(type) {
-	case User:
-		var users []User
-		if len(b) != 0 {
-			err = json.Unmarshal(b, &users)
-			if err != nil {
-				return err
-			}
-		}
-		for i := range users {
-			f(&users[i])
-		}
-	case Client:
-		var clients []Client
-		if len(b) != 0 {
-			err = json.Unmarshal(b, &clients)
-			if err != nil {
-				return err
-			}
-		}
-		for i := range clients {
-			f(&clients[i])
-		}
-	case Host:
-		var hosts []Host
-		if len(b) != 0 {
-			err = json.Unmarshal(b, &hosts)
-			if err != nil {
-				return err
-			}
-		}
-		for i := range hosts {
-			f(&hosts[i])
-		}
-	case Tunnel:
-		var tunnels []Tunnel
-		if len(b) != 0 {
-			err = json.Unmarshal(b, &tunnels)
-			if err != nil {
-				return err
-			}
-		}
-		for i := range tunnels {
-			f(&tunnels[i])
+		if err := decodePersistedObject(opened, t, f); err != nil {
+			fmt.Println("Error:", err)
+			return err
 		}
 	}
 	return nil

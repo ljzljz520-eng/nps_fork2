@@ -134,6 +134,17 @@ func (s *LocalStore) ExportConfigSnapshot() (*ConfigSnapshot, error) {
 	return buildConfigSnapshot(s.db), nil
 }
 
+// ExportMaskedConfigSnapshot returns a configuration snapshot with every
+// secret replaced by a non-reversible marker. It is intended for human-facing
+// exports; node replication and restore keep using ExportConfigSnapshot.
+func (s *LocalStore) ExportMaskedConfigSnapshot() (*ConfigSnapshot, error) {
+	snapshot, err := s.ExportConfigSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return MaskConfigSnapshot(snapshot), nil
+}
+
 func (s *LocalStore) ImportConfigSnapshot(snapshot *ConfigSnapshot) error {
 	return applyConfigSnapshot(s.db, snapshot)
 }

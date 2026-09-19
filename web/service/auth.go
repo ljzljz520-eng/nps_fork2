@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djylb/nps/lib/credential"
 	"github.com/djylb/nps/lib/crypt"
 	"github.com/djylb/nps/lib/file"
+	"github.com/djylb/nps/lib/logs"
 	"github.com/djylb/nps/lib/servercfg"
 )
 
@@ -131,26 +133,39 @@ func (s DefaultAuthService) Authenticate(input AuthenticateInput) (*SessionIdent
 		if err != nil && !errors.Is(err, file.ErrUserNotFound) {
 			return nil, err
 		}
-		if user != nil && userCredentialsMatch(user, password, input.TOTP) {
-			matchedClientIDs, err := s.userClientIDs(user.Id)
-			if err != nil {
-				return nil, err
+		if user != nil {
+			matched, upgraded := verifyUserCredentials(user, password, input.TOTP)
+			if matched {
+				if upgraded {
+					// Legacy plaintext password verified successfully; commit the
+					// parameter-versioned Argon2id replacement now that the login
+					// has succeeded. Migration failures never block the login.
+					if saver, ok := s.repo().(interface{ SaveUser(*file.User) error }); ok {
+						if err := saver.SaveUser(user); err != nil {
+							logs.Error("migrate legacy password hash for user %d failed: %v", user.Id, err)
+						}
+					}
+				}
+				matchedClientIDs, err := s.userClientIDs(user.Id)
+				if err != nil {
+					return nil, err
+				}
+				identity := &SessionIdentity{
+					Version:       SessionIdentityVersion,
+					Authenticated: true,
+					Kind:          "user",
+					Provider:      "local",
+					SubjectID:     buildUserSubjectID(username, matchedClientIDs, "password"),
+					Username:      username,
+					ClientIDs:     matchedClientIDs,
+					Roles:         []string{RoleUser},
+					Attributes: map[string]string{
+						"login_mode": "password",
+						"user_id":    strconv.Itoa(user.Id),
+					},
+				}
+				return s.normalizeIdentity(identity), nil
 			}
-			identity := &SessionIdentity{
-				Version:       SessionIdentityVersion,
-				Authenticated: true,
-				Kind:          "user",
-				Provider:      "local",
-				SubjectID:     buildUserSubjectID(username, matchedClientIDs, "password"),
-				Username:      username,
-				ClientIDs:     matchedClientIDs,
-				Roles:         []string{RoleUser},
-				Attributes: map[string]string{
-					"login_mode": "password",
-					"user_id":    strconv.Itoa(user.Id),
-				},
-			}
-			return s.normalizeIdentity(identity), nil
 		}
 	}
 	if cfg.Feature.AllowUserVkeyLogin && username == "" {
@@ -228,10 +243,14 @@ func (s DefaultAuthService) RegisterUser(input RegisterUserInput) (*RegisterUser
 		return nil, ErrReservedUsername
 	}
 
+	hashedPassword, err := credential.HashPassword(password)
+	if err != nil {
+		return nil, ErrInvalidRegistration
+	}
 	user := &file.User{
 		Id:         s.repo().NextUserID(),
 		Username:   username,
-		Password:   password,
+		Password:   hashedPassword,
 		Kind:       "local",
 		Status:     1,
 		TotalFlow:  &file.Flow{},
@@ -436,7 +455,19 @@ func adminCredentialsMatch(password, totp string, cfg *servercfg.Snapshot) bool 
 			return false
 		}
 	}
-	return password == expectedPassword
+	return passwordMatchesHashOrLegacy(expectedPassword, password)
+}
+
+// passwordMatchesHashOrLegacy verifies a supplied password against a stored
+// value that is either a parameter-versioned Argon2id PHC string or a legacy
+// plaintext password. A stored value that claims to be a PHC hash but is
+// malformed fails closed rather than falling back to a plaintext comparison.
+func passwordMatchesHashOrLegacy(stored, supplied string) bool {
+	if !credential.IsPasswordHash(stored) {
+		return subtle.ConstantTimeCompare([]byte(stored), []byte(supplied)) == 1
+	}
+	match, _, err := credential.VerifyPassword(stored, supplied)
+	return err == nil && match
 }
 
 func AutoAdminIdentity(cfg *servercfg.Snapshot) (*SessionIdentity, bool) {
@@ -475,13 +506,17 @@ func newAdminIdentity(cfg *servercfg.Snapshot, loginMode string) *SessionIdentit
 	}
 }
 
-func userCredentialsMatch(user *file.User, password, totp string) bool {
+// verifyUserCredentials validates a local user's password/TOTP. It returns
+// whether authentication succeeded and, on success, whether the stored legacy
+// plaintext password was just upgraded in place to an Argon2id hash and needs
+// to be persisted by the caller.
+func verifyUserCredentials(user *file.User, password, totp string) (bool, bool) {
 	if !localUserSessionAllowed(user, time.Now()) {
-		return false
+		return false, false
 	}
 	totpSecret := strings.TrimSpace(user.TOTPSecret)
 	if totpSecret == "" && user.Password == "" {
-		return false
+		return false, false
 	}
 	if totpSecret != "" {
 		valid := false
@@ -496,10 +531,29 @@ func userCredentialsMatch(user *file.User, password, totp string) bool {
 			}
 		}
 		if !valid {
-			return false
+			return false, false
 		}
 	}
-	return user.Password == password
+	storedPassword := user.Password
+	if storedPassword == "" {
+		// TOTP-only account: an empty password is accepted once the code above
+		// validated, any supplied password must be empty.
+		return password == "", false
+	}
+	match, upgrade, err := credential.VerifyPassword(storedPassword, password)
+	if err != nil || !match {
+		return false, false
+	}
+	if upgrade {
+		hashed, hashErr := credential.HashPassword(password)
+		if hashErr != nil {
+			logs.Error("rehash legacy password for user %d failed: %v", user.Id, hashErr)
+			return true, false
+		}
+		user.Password = hashed
+		return true, true
+	}
+	return true, false
 }
 
 func buildUserSubjectID(username string, clientIDs []int, loginMode string) string {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/djylb/nps/lib/credential"
 	"github.com/djylb/nps/lib/file"
 	"github.com/djylb/nps/lib/servercfg"
 )
@@ -63,8 +64,15 @@ func TestDefaultAuthServiceRegisterUserUsesInjectedRepository(t *testing.T) {
 			Repository: stubRepository{
 				nextUserID: func() int { return 11 },
 				createUser: func(user *file.User) error {
-					if user.Id != 11 || user.Username != "demo" || user.Password != "secret" {
+					if user.Id != 11 || user.Username != "demo" {
 						t.Fatalf("CreateUser() got %+v", user)
+					}
+					if !credential.IsPasswordHash(user.Password) {
+						t.Fatalf("CreateUser() stored plaintext password, want Argon2id hash: %q", user.Password)
+					}
+					match, _, err := credential.VerifyPassword(user.Password, "secret")
+					if err != nil || !match {
+						t.Fatalf("CreateUser() stored hash does not verify against password: match=%v err=%v", match, err)
 					}
 					return nil
 				},

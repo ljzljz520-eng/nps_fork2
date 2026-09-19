@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/djylb/nps/lib/common"
+	"github.com/djylb/nps/lib/credential"
 	"github.com/djylb/nps/lib/crypt"
 	"github.com/djylb/nps/lib/file"
 	"github.com/djylb/nps/lib/servercfg"
@@ -182,13 +183,20 @@ func (s DefaultUserService) Add(input AddUserInput) (UserMutation, error) {
 	if err != nil {
 		return UserMutation{}, err
 	}
+	storedPassword := ""
+	if password != "" {
+		storedPassword, err = credential.HashPassword(password)
+		if err != nil {
+			return UserMutation{}, err
+		}
+	}
 	if username == strings.TrimSpace(input.ReservedAdminUsername) {
 		return UserMutation{}, ErrReservedUsername
 	}
 	user := &file.User{
 		Id:             s.repo().NextUserID(),
 		Username:       username,
-		Password:       password,
+		Password:       storedPassword,
 		TOTPSecret:     totpSecret,
 		Kind:           "local",
 		Status:         boolToUserStatus(input.Status),
@@ -237,7 +245,16 @@ func (s DefaultUserService) Edit(input EditUserInput) (UserMutation, error) {
 	passwordProvided := input.PasswordProvided || strings.TrimSpace(input.Password) != ""
 	nextPassword := working.Password
 	if passwordProvided {
-		nextPassword = strings.TrimSpace(input.Password)
+		candidate := strings.TrimSpace(input.Password)
+		if candidate == "" {
+			nextPassword = ""
+		} else {
+			hashed, hashErr := credential.HashPassword(candidate)
+			if hashErr != nil {
+				return UserMutation{}, hashErr
+			}
+			nextPassword = hashed
+		}
 	}
 	nextTOTPSecret := working.TOTPSecret
 	totpSecretProvided := input.TOTPSecretProvided || strings.TrimSpace(input.TOTPSecret) != ""

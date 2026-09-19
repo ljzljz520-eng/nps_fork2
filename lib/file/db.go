@@ -7,7 +7,9 @@ import (
 	"sync/atomic"
 
 	"github.com/djylb/nps/lib/common"
+	"github.com/djylb/nps/lib/credential"
 	"github.com/djylb/nps/lib/index"
+	"github.com/djylb/nps/lib/logs"
 )
 
 type DbUtils struct {
@@ -198,6 +200,18 @@ func GetDb() *DbUtils {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 	once.Do(func() {
+		// Eagerly initialize the externally injected credential master key
+		// before any record is opened so an envelope on disk is authenticated
+		// against the correct key ring from the very first load.
+		keyRing := credential.Default()
+		if keyRing.Enabled() {
+			logs.Info("credential at-rest encryption enabled with master key id %q", keyRing.CurrentKeyID())
+			if keyRing.HasPreviousKey() {
+				logs.Info("credential previous master key %q retained for the rotation window", keyRing.PreviousKeyID())
+			}
+		} else {
+			logs.Info("credential at-rest encryption disabled (no master key injected)")
+		}
 		jsonDb := NewJsonDb(common.GetRunPath())
 		jsonDb.LoadUsers()
 		jsonDb.LoadClients()

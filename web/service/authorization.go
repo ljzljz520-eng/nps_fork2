@@ -454,6 +454,15 @@ func (s NodeAccessScope) IsFullAccess() bool {
 	return s.full
 }
 
+// IsPlatformPrincipal reports whether the scope belongs to a management
+// platform acting over the node API (machine-to-machine replication/recovery)
+// rather than an interactive human operator. Platform replication streams must
+// always carry real secret values, so human-facing export masking must not be
+// applied to them.
+func (s NodeAccessScope) IsPlatformPrincipal() bool {
+	return s.actorKind == "platform_admin" || s.actorKind == "platform_user"
+}
+
 func (s NodeAccessScope) CanViewUsage() bool {
 	return s.full || s.actorKind == "platform_admin" || s.actorKind == "platform_user" || s.actorKind == "user" || s.actorKind == "client"
 }

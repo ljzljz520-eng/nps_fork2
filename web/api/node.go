@@ -514,6 +514,15 @@ func (a *App) NodeConfig(c Context) {
 		respondManagementError(c, http.StatusInternalServerError, err)
 		return
 	}
+	// Human-facing exports are masked by default so a downloaded configuration
+	// never discloses secrets. Management platforms (node token replication and
+	// recovery) always receive real values; a full-access human operator may
+	// additionally pass ?secrets=1 to obtain an unmasked backup for restore.
+	if access.scope.IsFullAccess() && !access.scope.IsPlatformPrincipal() && !requestBoolValue(c, "secrets") {
+		if snapshot, ok := payload.(*file.ConfigSnapshot); ok {
+			payload = file.MaskConfigSnapshot(snapshot)
+		}
+	}
 	respondManagementData(c, http.StatusOK, payload, managementResponseMeta(c, time.Now().Unix(), a.runtimeIdentity().ConfigEpoch()))
 }
 
